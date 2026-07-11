@@ -387,8 +387,8 @@ fireBtn.MouseButton1Click:Connect(function()
 
             -- 30 second cooldown between sets (skip after last set)
             if i < #sets then
-                log(string.format("  Cooldown 50s before set %d...", i+1), C.muted)
-                for countdown = 50, 1, -1 do
+                log(string.format("  Cooldown 10s before set %d...", i+1), C.muted)
+                for countdown = 10, 1, -1 do
                     if not firing then break end
                     resolvedLbl.Text = string.format("Set %d/4 done — next in %ds", i, countdown)
                     task.wait(1)
