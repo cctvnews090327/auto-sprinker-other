@@ -296,9 +296,7 @@ end)
 -- HIDE PLANTS (client-side lag fix)
 -- Keeps first plant visible, hides the rest.
 -- =====================
-local hiddenPlants = {}  -- [plant] = {originalTransparencies}
-local plantsHidden = false
-
+-- Client-side destroy: cannot be undone without rejoin.
 hideBtn.MouseButton1Click:Connect(function()
     if not resolvedGarden then
         log("Locate a plot first", C.danger); return
@@ -306,51 +304,24 @@ hideBtn.MouseButton1Click:Connect(function()
     local plants = resolvedGarden:FindFirstChild("Plants")
     if not plants then log("No Plants folder", C.danger); return end
 
-    if plantsHidden then
-        -- Restore
-        for plant, parts in pairs(hiddenPlants) do
-            if plant.Parent then
-                for part, t in pairs(parts) do
-                    if part.Parent then part.Transparency = t end
-                end
-            end
-        end
-        hiddenPlants = {}
-        plantsHidden = false
-        hideBtn.Text = "👁 Hide Plants (keep 1 for lag)"
-        hideBtn.BackgroundColor3 = C.purpleD
-        log("Plants restored", C.accent)
-        return
-    end
-
     local uid = tostring(resolvedTargetId)
-    local kept, hid = 0, 0
     local keepOne = nil
+    local destroyed = 0
     for _,plant in ipairs(plants:GetChildren()) do
         if plant.Name:find(uid) then
             if not keepOne then
                 keepOne = plant
-                kept = 1
             else
-                local originals = {}
-                for _,d in ipairs(plant:GetDescendants()) do
-                    if d:IsA("BasePart") then
-                        originals[d] = d.Transparency
-                        d.Transparency = 1
-                    elseif d:IsA("Decal") or d:IsA("Texture") then
-                        originals[d] = d.Transparency
-                        d.Transparency = 1
-                    end
-                end
-                hiddenPlants[plant] = originals
-                hid = hid + 1
+                pcall(function() plant:Destroy() end)
+                destroyed = destroyed + 1
             end
         end
     end
-    plantsHidden = true
-    hideBtn.Text = ("👁 Restore Plants (%d hidden)"):format(hid)
+    hideBtn.Text = ("💥 Destroyed %d (rejoin to restore)"):format(destroyed)
     hideBtn.BackgroundColor3 = Color3.fromRGB(65,45,90)
-    log(("Hid %d plants, kept %s visible"):format(hid, keepOne and keepOne.Name:sub(1,20) or "none"), C.purple)
+    hideBtn.Active = false
+    log(("Destroyed %d plants client-side, kept %s"):format(destroyed, keepOne and keepOne.Name:sub(1,24) or "none"), C.purple)
+    log("Rejoin server to restore visibility", C.muted)
 end)
 
 -- =====================
