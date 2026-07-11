@@ -6,7 +6,7 @@
 --   * Sprinkler has 2min lifetime; auto re-places when expired
 --   * Sprinkler only placed if none currently on the target garden
 --   * "Hide Plants" button — hides all but 1 plant client-side (lag fix)
---   * Watering-can lifetime treated as 7-10s (fires every 8s)
+--   * Watering-can lifetime treated as 7-10s (fires every 6s)
 -- ============================================================
 
 if game:GetService("CoreGui"):FindFirstChild("GAG_EmerRegrow") then
@@ -24,7 +24,7 @@ local Networking = require(RS.SharedModules.Networking)
 -- CONFIG
 -- =====================
 local WATER_CYCLES     = 20     -- total watering fires
-local WATER_INTERVAL   = 8      -- seconds between watering fires
+local WATER_INTERVAL   = 6      -- seconds between watering fires
 local SPRINKLER_LIFE   = 120    -- 2 minutes
 local SPRINKLER_TAG    = "Sprinkler"  -- attribute / name hint
 
@@ -405,7 +405,7 @@ fireBtn.MouseButton1Click:Connect(function()
             task.wait(0.5)
         end
 
-        -- 20 watering cycles, every 8s
+        -- 20 watering cycles, every 6s
         for i = 1, WATER_CYCLES do
             if not firing then log("Stopped by user", C.gold); break end
 
