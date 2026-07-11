@@ -175,42 +175,18 @@ local function tpTo(pos)
     end
 end
 
--- try several arg orders for PlaceSprinkler (confirmed remote path: Networking.Place.PlaceSprinkler)
-local function firePlaceSprinkler(pos, itemName, tool)
-    local ok = false
+-- PlaceSprinkler confirmed: Fire(Vector3 pos, string sprinklerName, Tool, number plotId)
+local function firePlaceSprinkler(pos, itemName, tool, plotId)
     local remote = Networking.Place and Networking.Place.PlaceSprinkler
     if not remote then return false, "no PlaceSprinkler remote" end
-    -- most-likely signature first, then fallbacks
-    local attempts = {
-        function() remote:Fire(pos, itemName, tool) end,
-        function() remote:Fire(pos, tool) end,
-        function() remote:Fire(tool, pos) end,
-        function() remote:Fire(itemName, pos) end,
-    }
-    for _, fn in ipairs(attempts) do
-        ok = pcall(fn)
-        if ok then return true end
-        task.wait(0.1)
-    end
-    return false
+    local ok, err = pcall(function()
+        remote:Fire(pos, itemName, tool, plotId)
+    end)
+    return ok, err
 end
 
--- watering can: remote unconfirmed — try Place.PlaceWateringCan, else Activate()
-local function fireWaterOnce(pos, itemName, tool)
-    local remote = Networking.Place and (Networking.Place.PlaceWateringCan
-                 or Networking.Place.UseWateringCan or Networking.Place.Water)
-    if remote then
-        local attempts = {
-            function() remote:Fire(pos, itemName, tool) end,
-            function() remote:Fire(pos, tool) end,
-            function() remote:Fire(tool, pos) end,
-        }
-        for _, fn in ipairs(attempts) do
-            if pcall(fn) then return true end
-            task.wait(0.08)
-        end
-    end
-    -- fallback: physically activate the equipped tool at the position
+-- Watering can has NO remote — equip, tp near plants, Activate()
+local function fireWaterOnce(pos, tool)
     tpTo(pos)
     return pcall(function() tool:Activate() end)
 end
@@ -246,7 +222,8 @@ local function sprinklerLoop(log)
                     equip(tool)
                     tpTo(pos)
                     local itemName = readAttr(tool, SPR_ATTR_KEYS)
-                    local ok = firePlaceSprinkler(pos, itemName, tool)
+                    local plotId = tonumber(plot.Name:match("%d+")) or 0
+                    local ok = firePlaceSprinkler(pos, itemName, tool, plotId)
                     log((ok and "placed " or "FAILED ") .. sprName ..
                         " @ " .. plotOwnerName(plot))
                     -- wait out the 2-min duration before the next one
@@ -281,8 +258,7 @@ local function waterLoop(log)
                     local pos = findPlantAreaPos(plot)
                     if pos then
                         equip(tool)
-                        local itemName = readAttr(tool, CAN_ATTR_KEYS)
-                        local ok = fireWaterOnce(pos, itemName, tool)
+                        local ok = fireWaterOnce(pos, tool)
                         log(ok and "watered (all grouped)" or "water FAILED")
                     end
                 end
