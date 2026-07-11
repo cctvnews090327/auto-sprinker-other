@@ -1,577 +1,414 @@
 -- ============================================================
---  GAG2 Friend Garden Helper  |  MOBILE UI
---  1) Sprinkler rotation on OTHER players' planted gardens
---     - places 1 sprinkler, waits ~2 min, then places the next
---  2) Watering can loop: waters 1 plant every 10s (waters all)
---  3) Discover Remotes button to confirm PlaceSprinkler / watering args
+-- GAG2 Emergency Regrow v2
+-- Run on ALT with 4x Super Sprinkler + 4x Super Watering Can
+-- Reads FARMING account's plot centroid
+-- 4 sprinklers at 10 stud spacing along X
+-- 4 watering cans at 8 stud spacing along Z
 -- ============================================================
 
--- ---------- cleanup ----------
-pcall(function() if _G.GAG_FriendUI then _G.GAG_FriendUI:Destroy() end end)
-_G.GAG_SprRunning = false
-_G.GAG_CanRunning = false
-task.wait(0.3)
-
--- ---------- services ----------
-local Players   = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
-local RS        = game:GetService("ReplicatedStorage")
-local CS        = game:GetService("CollectionService")
-local CoreGui   = game:GetService("CoreGui")
-local lp        = Players.LocalPlayer
-
--- anti-idle
-pcall(function()
-    if getconnections then
-        for _, c in pairs(getconnections(lp.Idled)) do c:Disable() end
-    end
-end)
-
--- ---------- networking ----------
-local Networking
-do
-    local sm = RS:WaitForChild("SharedModules", 20)
-    local nm = sm and sm:WaitForChild("Networking", 10)
-    for _ = 1, 5 do
-        local ok, res = pcall(require, nm)
-        if ok and res then Networking = res break end
-        task.wait(0.5)
-    end
-end
-if not Networking then
-    warn("[FriendHelper] Networking module not found"); return
+if game:GetService("CoreGui"):FindFirstChild("GAG_EmerRegrow") then
+    game:GetService("CoreGui").GAG_EmerRegrow:Destroy()
 end
 
--- ---------- config / state ----------
-local CFG = {
-    sprinklers = {},          -- selected sprinkler names, rotated in order
-    cans       = {},          -- selected watering can names
-    sprSeconds = 120,         -- 2 min duration
-    canSeconds = 10,          -- water every 10s
-    targetOwner = nil,        -- nil = any planted plot; else specific owner name
-}
+local Players    = game:GetService("Players")
+local Workspace  = game:GetService("Workspace")
+local CoreGui    = game:GetService("CoreGui")
+local RS         = game:GetService("ReplicatedStorage")
+local lp         = Players.LocalPlayer
+local Networking = require(RS.SharedModules.Networking)
 
--- catalog (exact strings from gear catalog)
-local SPRINKLER_LIST = {
-    "Common Sprinkler", "Uncommon Sprinkler", "Rare Sprinkler",
-    "Legendary Sprinkler", "Super Sprinkler",
-}
-local CAN_LIST = {
-    "Common Watering Can", "Super Watering Can",
-}
-
--- tool attribute keys the placeables use (checked in order)
-local SPR_ATTR_KEYS = { "Sprinkler", "PlaceableItem", "ItemName", "GearName" }
-local CAN_ATTR_KEYS = { "WateringCan", "PlaceableItem", "ItemName", "GearName" }
-
--- ---------- helpers ----------
-local function getChar()
-    local ch = lp.Character or lp.CharacterAdded:Wait()
-    return ch, ch:FindFirstChildOfClass("Humanoid"), ch:FindFirstChild("HumanoidRootPart")
-end
-
-local function findMyPlot()
-    local id = lp:GetAttribute("PlotId")
-    if id and Workspace:FindFirstChild("Gardens") then
-        local p = Workspace.Gardens:FindFirstChild("Plot" .. tostring(id))
-        if p then return p end
-    end
-    if Workspace:FindFirstChild("Gardens") then
-        for _, p in ipairs(Workspace.Gardens:GetChildren()) do
-            if p:GetAttribute("Owner") == lp.Name then return p end
-        end
-    end
-    return nil
-end
-
-local function plotHasPlants(plot)
-    local plants = plot:FindFirstChild("Plants")
-    if plants and #plants:GetChildren() > 0 then return true end
-    -- fallback: any PlantArea child with plant models under the plot
-    for _, d in ipairs(plot:GetDescendants()) do
-        if d:GetAttribute("SeedName") then return true end
-    end
-    return false
-end
-
-local function plotOwnerName(plot)
-    local o = plot:GetAttribute("Owner")
-    if o then return o end
-    local uid = plot:GetAttribute("OwnerUserId")
-    if uid then
-        local pl = Players:GetPlayerByUserId(uid)
-        if pl then return pl.Name end
-    end
-    return plot.Name
-end
-
--- other plots (not mine) that currently have plants/seeds
-local function getTargetPlots()
-    local mine = findMyPlot()
-    local out = {}
-    if not Workspace:FindFirstChild("Gardens") then return out end
-    for _, plot in ipairs(Workspace.Gardens:GetChildren()) do
-        if plot ~= mine and plotHasPlants(plot) then
-            if (not CFG.targetOwner) or plotOwnerName(plot) == CFG.targetOwner then
-                table.insert(out, plot)
-            end
-        end
-    end
-    return out
-end
-
--- raycast a valid position onto a PlantArea part inside the given plot
-local function findPlantAreaPos(plot)
-    local areas = {}
-    for _, part in ipairs(CS:GetTagged("PlantArea")) do
-        if part:IsDescendantOf(plot) then table.insert(areas, part) end
-    end
-    if #areas == 0 then return nil end
-    local part = areas[math.random(1, #areas)]
-    -- cast straight down from just above the surface centre
-    local top = part.Position + Vector3.new(0, 6, 0)
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Include
-    params.FilterDescendantsInstances = areas
-    local hit = Workspace:Raycast(top, Vector3.new(0, -20, 0), params)
-    if hit then return hit.Position, part end
-    return part.Position + Vector3.new(0, part.Size.Y / 2, 0), part
-end
-
-local function toolByName(nameLower)
-    for _, holder in ipairs({ lp.Character, lp.Backpack }) do
-        if holder then
-            for _, t in ipairs(holder:GetChildren()) do
-                if t:IsA("Tool") and t.Name:lower():find(nameLower, 1, true) then
-                    return t
-                end
-            end
-        end
-    end
-    return nil
-end
-
-local function readAttr(tool, keys)
-    for _, k in ipairs(keys) do
-        local v = tool:GetAttribute(k)
-        if v then return v end
-    end
-    return tool.Name
-end
-
-local function equip(tool)
-    local _, hum = getChar()
-    if hum and tool.Parent ~= lp.Character then
-        pcall(function() hum:EquipTool(tool) end)
-        task.wait(0.06)
-    end
-end
-
-local function tpTo(pos)
-    local _, _, hrp = getChar()
-    if hrp then
-        hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
-        task.wait(0.15)
-    end
-end
-
--- PlaceSprinkler confirmed: Fire(Vector3 pos, string sprinklerName, Tool, number plotId)
-local function firePlaceSprinkler(pos, itemName, tool, plotId)
-    local remote = Networking.Place and Networking.Place.PlaceSprinkler
-    if not remote then return false, "no PlaceSprinkler remote" end
-    local ok, err = pcall(function()
-        remote:Fire(pos, itemName, tool, plotId)
-    end)
-    return ok, err
-end
-
--- Watering can has NO remote — equip, tp near plants, Activate()
-local function fireWaterOnce(pos, tool)
-    tpTo(pos)
-    return pcall(function() tool:Activate() end)
-end
-
--- ============================================================
---  LOOP 1 — sprinkler rotation on friend plots
--- ============================================================
-local sprIndex = 0
-local function nextSprinklerName()
-    if #CFG.sprinklers == 0 then return nil end
-    sprIndex = (sprIndex % #CFG.sprinklers) + 1
-    return CFG.sprinklers[sprIndex]
-end
-
-local function sprinklerLoop(log)
-    while _G.GAG_SprRunning do
-        local sprName = nextSprinklerName()
-        if not sprName then
-            log("no sprinkler selected"); task.wait(2)
-        else
-            local plots = getTargetPlots()
-            if #plots == 0 then
-                log("no planted friend plots found"); task.wait(3)
-            else
-                local plot = plots[1]
-                local pos, area = findPlantAreaPos(plot)
-                local tool = toolByName(sprName:lower())
-                if not pos then
-                    log("no PlantArea in " .. plotOwnerName(plot)); task.wait(3)
-                elseif not tool then
-                    log("no '" .. sprName .. "' in inventory"); task.wait(3)
-                else
-                    equip(tool)
-                    tpTo(pos)
-                    local itemName = readAttr(tool, SPR_ATTR_KEYS)
-                    local plotId = tonumber(plot.Name:match("%d+")) or 0
-                    local ok = firePlaceSprinkler(pos, itemName, tool, plotId)
-                    log((ok and "placed " or "FAILED ") .. sprName ..
-                        " @ " .. plotOwnerName(plot))
-                    -- wait out the 2-min duration before the next one
-                    local t = 0
-                    while _G.GAG_SprRunning and t < CFG.sprSeconds do
-                        task.wait(1); t = t + 1
-                    end
-                end
-            end
-        end
-    end
-    log("sprinkler loop stopped")
-end
-
--- ============================================================
---  LOOP 2 — watering can, 1 plant / 10s
--- ============================================================
-local function waterLoop(log)
-    while _G.GAG_CanRunning do
-        local canName = CFG.cans[1]
-        if not canName then
-            log("no watering can selected"); task.wait(2)
-        else
-            local tool = toolByName(canName:lower())
-            if not tool then
-                log("no '" .. canName .. "' in inventory"); task.wait(3)
-            else
-                -- water a plant in the target plot (or first planted plot)
-                local plots = getTargetPlots()
-                local plot = plots[1] or findMyPlot()
-                if plot then
-                    local pos = findPlantAreaPos(plot)
-                    if pos then
-                        equip(tool)
-                        local ok = fireWaterOnce(pos, tool)
-                        log(ok and "watered (all grouped)" or "water FAILED")
-                    end
-                end
-                local t = 0
-                while _G.GAG_CanRunning and t < CFG.canSeconds do
-                    task.wait(1); t = t + 1
-                end
-            end
-        end
-    end
-    log("watering loop stopped")
-end
-
--- ============================================================
---  DISCOVER REMOTES — capture exact args by placing manually
--- ============================================================
-local function discover(log)
-    log("Hook ready — now MANUALLY place a sprinkler & swing a can")
-    local function ser(v)
-        local ty = typeof(v)
-        if ty == "Vector3" then return ("V3(%.1f,%.1f,%.1f)"):format(v.X, v.Y, v.Z)
-        elseif ty == "Instance" then return ("Inst<%s:%s>"):format(v.ClassName, v.Name)
-        elseif ty == "string" then return '"' .. v .. '"'
-        else return ty .. "(" .. tostring(v) .. ")" end
-    end
-    local function want(n) n = n:lower(); return n:find("place") or n:find("water") or n:find("sprinkler") end
-    -- prefer hookmetamethod (executor-safe), fall back to raw metatable
-    local installed = false
-    if hookmetamethod then
-        local old; old = hookmetamethod(game, "__namecall", function(self, ...)
-            local m = getnamecallmethod and getnamecallmethod() or ""
-            if m == "Fire" or m == "FireServer" or m == "InvokeServer" then
-                local ok, full = pcall(function() return self:GetFullName() end)
-                if ok and want(full) then
-                    local a, parts = { ... }, {}
-                    for i, v in ipairs(a) do parts[i] = "[" .. i .. "]" .. ser(v) end
-                    log("REMOTE " .. full .. " " .. table.concat(parts, " "))
-                end
-            end
-            return old(self, ...)
-        end)
-        installed = true
-    elseif getrawmetatable then
-        local mt = getrawmetatable(game); setreadonly(mt, false)
-        local old = mt.__namecall
-        mt.__namecall = newcclosure(function(self, ...)
-            local m = getnamecallmethod()
-            if m == "Fire" or m == "FireServer" then
-                local full = self:GetFullName()
-                if want(full) then
-                    local a, parts = { ... }, {}
-                    for i, v in ipairs(a) do parts[i] = "[" .. i .. "]" .. ser(v) end
-                    log("REMOTE " .. full .. " " .. table.concat(parts, " "))
-                end
-            end
-            return old(self, ...)
-        end)
-        setreadonly(mt, true); installed = true
-    end
-    if not installed then log("no hook function in this executor") end
-end
-
--- ============================================================
---  MOBILE UI
--- ============================================================
 local C = {
-    bg     = Color3.fromRGB(15, 18, 28),
-    card   = Color3.fromRGB(23, 28, 42),
-    row    = Color3.fromRGB(30, 36, 54),
-    accent = Color3.fromRGB(64, 190, 128),
-    blue   = Color3.fromRGB(70, 130, 215),
-    red    = Color3.fromRGB(200, 66, 74),
-    text   = Color3.fromRGB(228, 234, 244),
-    dim    = Color3.fromRGB(120, 132, 156),
-    on     = Color3.fromRGB(64, 190, 128),
-    off    = Color3.fromRGB(44, 52, 74),
+    bg      = Color3.fromRGB(14,14,20),
+    panel   = Color3.fromRGB(20,20,28),
+    border  = Color3.fromRGB(42,42,58),
+    accent  = Color3.fromRGB(90,210,130),
+    accentD = Color3.fromRGB(30,65,45),
+    text    = Color3.fromRGB(215,215,228),
+    muted   = Color3.fromRGB(100,100,120),
+    header  = Color3.fromRGB(18,18,26),
+    danger  = Color3.fromRGB(220,80,80),
+    dangerD = Color3.fromRGB(70,25,25),
+    gold    = Color3.fromRGB(255,195,55),
+    water   = Color3.fromRGB(40,100,180),
 }
+
+local function mkFrame(parent, size, pos, color, radius)
+    local f = Instance.new("Frame", parent)
+    f.Size=size; f.Position=pos
+    f.BackgroundColor3=color or C.panel; f.BorderSizePixel=0
+    if radius then Instance.new("UICorner",f).CornerRadius=UDim.new(0,radius) end
+    return f
+end
+
+local function mkLabel(parent, text, size, pos, color, fs, bold, xAlign)
+    local l = Instance.new("TextLabel", parent)
+    l.BackgroundTransparency=1; l.Size=size; l.Position=pos
+    l.Text=text; l.TextColor3=color or C.text
+    l.TextSize=fs or 10
+    l.Font=bold and Enum.Font.GothamBold or Enum.Font.GothamMedium
+    l.TextXAlignment=xAlign or Enum.TextXAlignment.Left
+    l.TextWrapped=true
+    return l
+end
+
+local function mkBtn(parent, text, size, pos, bg, fg, cb)
+    local b = Instance.new("TextButton", parent)
+    b.Size=size; b.Position=pos; b.BackgroundColor3=bg; b.BorderSizePixel=0
+    b.Text=text; b.TextColor3=fg; b.TextSize=10; b.Font=Enum.Font.GothamBold
+    b.AutoButtonColor=false
+    Instance.new("UICorner",b).CornerRadius=UDim.new(0,4)
+    if cb then b.MouseButton1Click:Connect(cb) end
+    return b
+end
+
+-- =====================
+-- MAIN WINDOW
+-- =====================
+local W, H = 340, 400
 
 local gui = Instance.new("ScreenGui")
-gui.Name = "GAG_FriendUI"
+gui.Name = "GAG_EmerRegrow"
 gui.ResetOnSpawn = false
-gui.IgnoreGuiInset = true
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-_G.GAG_FriendUI = gui
-local parented = pcall(function() if gethui then gui.Parent = gethui() end end)
-if not gui.Parent then pcall(function() gui.Parent = CoreGui end) end
-if not gui.Parent then gui.Parent = lp:WaitForChild("PlayerGui") end
+gui.Parent = CoreGui
 
-local function corner(o, r) local u = Instance.new("UICorner"); u.CornerRadius = UDim.new(0, r or 8); u.Parent = o end
-local function pad(o, p) local u = Instance.new("UIPadding"); for _, s in ipairs({"Left","Right","Top","Bottom"}) do u[s.."Padding"] = UDim.new(0, p) end; u.Parent = o end
+local main = Instance.new("Frame", gui)
+main.Size = UDim2.new(0,W,0,H)
+main.Position = UDim2.new(0.5,-W/2,0.5,-H/2)
+main.BackgroundColor3=C.bg; main.BorderSizePixel=0
+main.Active=true; main.Draggable=true; main.ClipsDescendants=true
+Instance.new("UICorner",main).CornerRadius=UDim.new(0,10)
+Instance.new("UIStroke",main).Color=C.border
 
--- floating toggle (big, thumb-reachable)
-local fab = Instance.new("TextButton")
-fab.Size = UDim2.new(0, 62, 0, 62)
-fab.Position = UDim2.new(0, 14, 0.42, 0)
-fab.BackgroundColor3 = C.accent
-fab.Text = "💧"
-fab.TextSize = 30
-fab.Font = Enum.Font.GothamBold
-fab.AutoButtonColor = true
-fab.Parent = gui
-corner(fab, 31)
+-- Header
+local hdr = mkFrame(main, UDim2.new(1,0,0,32), UDim2.new(0,0,0,0), C.header, 10)
+mkLabel(hdr, "💧 Multi-Cycle Regrow", UDim2.new(1,-40,1,0), UDim2.new(0,10,0,0),
+    Color3.fromRGB(80,160,255), 12, true)
+mkBtn(hdr, "✕", UDim2.new(0,24,0,20), UDim2.new(1,-28,0.5,-10),
+    C.dangerD, C.danger, function() gui:Destroy() end)
 
--- main panel (mobile width, tall, scrollable body)
-local panel = Instance.new("Frame")
-panel.Size = UDim2.new(0, 320, 0, 500)
-panel.Position = UDim2.new(0, 14, 0.10, 0)
-panel.BackgroundColor3 = C.bg
-panel.Visible = false
-panel.Parent = gui
-corner(panel, 14)
+-- Info banner
+local infoBanner = mkFrame(main, UDim2.new(1,-16,0,36), UDim2.new(0,8,0,40), Color3.fromRGB(20,30,20), 6)
+Instance.new("UIStroke",infoBanner).Color = C.accentD
+mkLabel(infoBanner, "4 sets: 1x Sprinkler + 1x Watering Can each\n50s cooldown between sets",
+    UDim2.new(1,-8,1,0), UDim2.new(0,4,0,0), C.muted, 8, false, Enum.TextXAlignment.Center)
 
-local header = Instance.new("TextLabel")
-header.Size = UDim2.new(1, 0, 0, 46)
-header.BackgroundTransparency = 1
-header.Text = "🌱 Friend Garden Helper"
-header.TextColor3 = C.text
-header.Font = Enum.Font.GothamBold
-header.TextSize = 17
-header.Parent = panel
+-- Farming account username
+mkLabel(main, "Farming account username:", UDim2.new(1,-16,0,14),
+    UDim2.new(0,8,0,84), C.muted, 9)
 
--- draggable via header (touch + mouse)
-do
-    local dragging, startPos, startInput
-    header.InputBegan:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-            dragging = true; startInput = i.Position; startPos = panel.Position
-            i.Changed:Connect(function() if i.UserInputState == Enum.UserInputState.End then dragging = false end end)
-        end
-    end)
-    game:GetService("UserInputService").InputChanged:Connect(function(i)
-        if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
-            local d = i.Position - startInput
-            panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+local recipF = Instance.new("Frame", main)
+recipF.Size = UDim2.new(1,-16,0,24); recipF.Position = UDim2.new(0,8,0,100)
+recipF.BackgroundColor3=C.panel; recipF.BorderSizePixel=0
+Instance.new("UICorner",recipF).CornerRadius=UDim.new(0,4)
+Instance.new("UIStroke",recipF).Color=C.border
+local farmUserInput = Instance.new("TextBox", recipF)
+farmUserInput.Size=UDim2.new(1,-8,1,0); farmUserInput.Position=UDim2.new(0,4,0,0)
+farmUserInput.BackgroundTransparency=1; farmUserInput.Text=""
+farmUserInput.TextColor3=Color3.fromRGB(80,160,255); farmUserInput.TextSize=10
+farmUserInput.Font=Enum.Font.GothamBold; farmUserInput.ClearTextOnFocus=false
+farmUserInput.PlaceholderText="farming account username"
+farmUserInput.PlaceholderColor3=C.muted
+
+-- Locate button
+local locateBtn = mkBtn(main, "🔍 Locate Target Plot",
+    UDim2.new(1,-16,0,26), UDim2.new(0,8,0,132),
+    Color3.fromRGB(25,35,65), Color3.fromRGB(80,160,255))
+
+-- Resolved info
+local resolvedLbl = mkLabel(main, "Press Locate first to verify target plot",
+    UDim2.new(1,-16,0,32), UDim2.new(0,8,0,166), C.muted, 9,
+    false, Enum.TextXAlignment.Center)
+
+-- Fire button (locked until locate succeeds)
+local fireBtn = mkBtn(main, "🚨 Fire Emergency Regrow",
+    UDim2.new(1,-16,0,28), UDim2.new(0,8,0,206),
+    Color3.fromRGB(30,15,15), Color3.fromRGB(100,40,40))
+fireBtn.Active = false
+
+-- Log scroll
+local logScroll = Instance.new("ScrollingFrame", main)
+logScroll.Size = UDim2.new(1,-16,0,148)
+logScroll.Position = UDim2.new(0,8,0,242)
+logScroll.BackgroundColor3=C.panel; logScroll.BorderSizePixel=0
+logScroll.ScrollBarThickness=3; logScroll.ScrollBarImageColor3=C.border
+logScroll.CanvasSize=UDim2.new(0,0,0,0)
+logScroll.AutomaticCanvasSize=Enum.AutomaticSize.Y
+Instance.new("UICorner",logScroll).CornerRadius=UDim.new(0,6)
+local logLay = Instance.new("UIListLayout",logScroll)
+logLay.Padding=UDim.new(0,1); logLay.SortOrder=Enum.SortOrder.LayoutOrder
+local logPad = Instance.new("UIPadding",logScroll)
+logPad.PaddingLeft=UDim.new(0,4); logPad.PaddingTop=UDim.new(0,4)
+
+local lineCount = 0
+local function log(msg, color)
+    lineCount = lineCount + 1
+    local line = Instance.new("TextLabel", logScroll)
+    line.BackgroundTransparency=1; line.Size=UDim2.new(1,-4,0,13)
+    line.Text="["..os.date("%H:%M:%S").."] "..msg
+    line.TextColor3=color or Color3.fromRGB(200,210,200)
+    line.TextSize=9; line.Font=Enum.Font.GothamMedium
+    line.TextXAlignment=Enum.TextXAlignment.Left
+    line.TextWrapped=true; line.AutomaticSize=Enum.AutomaticSize.Y
+    line.LayoutOrder=lineCount
+    task.defer(function()
+        if logScroll and logScroll.Parent then
+            logScroll.CanvasPosition=Vector2.new(0, logScroll.AbsoluteCanvasSize.Y)
         end
     end)
 end
 
-fab.MouseButton1Click:Connect(function() panel.Visible = not panel.Visible end)
+-- =====================
+-- RESOLVED STATE
+-- =====================
+local resolvedTargetId = nil
+local resolvedCentroid = nil
+local resolvedPlotId   = nil
+local resolvedUsername = ""
 
-local body = Instance.new("ScrollingFrame")
-body.Size = UDim2.new(1, -16, 1, -100)
-body.Position = UDim2.new(0, 8, 0, 50)
-body.BackgroundTransparency = 1
-body.BorderSizePixel = 0
-body.ScrollBarThickness = 5
-body.CanvasSize = UDim2.new(0, 0, 0, 0)
-body.AutomaticCanvasSize = Enum.AutomaticSize.Y
-body.Parent = panel
-local bl = Instance.new("UIListLayout"); bl.Padding = UDim.new(0, 8); bl.SortOrder = Enum.SortOrder.LayoutOrder; bl.Parent = body
-
--- section builder
-local function sectionLabel(txt, color)
-    local l = Instance.new("TextLabel")
-    l.Size = UDim2.new(1, 0, 0, 24)
-    l.BackgroundTransparency = 1
-    l.Text = txt
-    l.TextColor3 = color or C.dim
-    l.TextXAlignment = Enum.TextXAlignment.Left
-    l.Font = Enum.Font.GothamBold
-    l.TextSize = 13
-    l.Parent = body
-end
-
--- multi-select chip row (48px tall = easy touch target)
-local function selectRow(name, tbl, order)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 0, 46)
-    btn.BackgroundColor3 = C.row
-    btn.Text = ""
-    btn.AutoButtonColor = false
-    btn.LayoutOrder = order or 0
-    btn.Parent = body
-    corner(btn, 10)
-
-    local box = Instance.new("Frame")
-    box.Size = UDim2.new(0, 26, 0, 26)
-    box.Position = UDim2.new(0, 12, 0.5, -13)
-    box.BackgroundColor3 = C.off
-    box.Parent = btn
-    corner(box, 7)
-    local tick = Instance.new("TextLabel")
-    tick.Size = UDim2.new(1, 0, 1, 0); tick.BackgroundTransparency = 1
-    tick.Text = "✓"; tick.TextColor3 = C.text; tick.Font = Enum.Font.GothamBold
-    tick.TextSize = 18; tick.Visible = false; tick.Parent = box
-
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -52, 1, 0)
-    lbl.Position = UDim2.new(0, 48, 0, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = name
-    lbl.TextColor3 = C.text
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Font = Enum.Font.GothamMedium
-    lbl.TextSize = 14
-    lbl.Parent = btn
-
-    local function selected()
-        for _, v in ipairs(tbl) do if v == name then return true end end
-        return false
+-- =====================
+-- HELPERS
+-- =====================
+local function getTargetPlotCentroid(targetUserId)
+    local uid = tostring(targetUserId)
+    local sumX, sumZ, count = 0, 0, 0
+    local plotY = 142.36
+    for _, garden in ipairs(Workspace.Gardens:GetChildren()) do
+        local plants = garden:FindFirstChild("Plants")
+        if plants then
+            for _, plant in ipairs(plants:GetChildren()) do
+                if plant.Name:find(uid) then
+                    local pp = plant.PrimaryPart or plant:FindFirstChildWhichIsA("BasePart")
+                    if pp then
+                        sumX = sumX + pp.Position.X
+                        sumZ = sumZ + pp.Position.Z
+                        plotY = pp.Position.Y
+                        count = count + 1
+                    end
+                end
+            end
+        end
     end
-    local function render()
-        local s = selected()
-        box.BackgroundColor3 = s and C.accent or C.off
-        tick.Visible = s
+    if count == 0 then return nil end
+    log(string.format("Found %d plants for target", count), C.accent)
+    return Vector3.new(sumX/count, plotY, sumZ/count)
+end
+
+local function findTool(namePattern)
+    local bp = lp:FindFirstChildOfClass("Backpack")
+    local char = lp.Character
+    for _, container in ipairs({char, bp}) do
+        if container then
+            for _, item in ipairs(container:GetChildren()) do
+                if item.Name:lower():find(namePattern:lower()) then return item end
+            end
+        end
     end
-    render()
-    btn.MouseButton1Click:Connect(function()
-        if selected() then
-            for i = #tbl, 1, -1 do if tbl[i] == name then table.remove(tbl, i) end end
-        else
-            table.insert(tbl, name)
-        end
-        render()
-    end)
+    return nil
 end
 
--- toggle button (start/stop) 52px
-local function toggleButton(labelOn, labelOff, getState, onToggle)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 0, 50)
-    btn.BackgroundColor3 = C.off
-    btn.Text = labelOff
-    btn.TextColor3 = C.text
-    btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 15
-    btn.Parent = body
-    corner(btn, 10)
-    local function render()
-        local s = getState()
-        btn.Text = s and labelOn or labelOff
-        btn.BackgroundColor3 = s and C.red or C.accent
+-- =====================
+-- LOCATE BUTTON
+-- =====================
+locateBtn.MouseButton1Click:Connect(function()
+    local farmUsername = farmUserInput.Text:match("^%s*(.-)%s*$")
+    if farmUsername == "" then
+        resolvedLbl.Text = "Enter farming account username first"
+        resolvedLbl.TextColor3 = C.danger; return
     end
-    render()
-    btn.MouseButton1Click:Connect(function() onToggle(); render() end)
-    return btn
-end
 
--- ---- build sections ----
-sectionLabel("SPRINKLERS  (rotates every 2 min)", C.accent)
-for i, s in ipairs(SPRINKLER_LIST) do selectRow(s, CFG.sprinklers, i) end
+    locateBtn.Active = false; locateBtn.Text = "Locating..."
+    resolvedLbl.Text = "Resolving..."; resolvedLbl.TextColor3 = C.muted
+    resolvedTargetId = nil; resolvedCentroid = nil; resolvedPlotId = nil
+    fireBtn.Active = false
+    fireBtn.BackgroundColor3 = Color3.fromRGB(30,15,15)
+    fireBtn.TextColor3 = Color3.fromRGB(100,40,40)
 
-sectionLabel("WATERING CANS  (waters every 10s)", C.blue)
-for i, c in ipairs(CAN_LIST) do selectRow(c, CFG.cans, 100 + i) end
-
-sectionLabel("TARGET", C.dim)
--- target dropdown: "Any planted plot" + each other player
-do
-    local box = Instance.new("TextButton")
-    box.Size = UDim2.new(1, 0, 0, 44)
-    box.BackgroundColor3 = C.row
-    box.Text = "Any planted plot ▾"
-    box.TextColor3 = C.text
-    box.Font = Enum.Font.GothamMedium
-    box.TextSize = 14
-    box.Parent = body
-    corner(box, 10)
-    box.MouseButton1Click:Connect(function()
-        -- cycle: nil -> each other player -> back to nil
-        local names = {}
-        for _, pl in ipairs(Players:GetPlayers()) do
-            if pl ~= lp then table.insert(names, pl.Name) end
+    task.spawn(function()
+        local ok, targetId = pcall(function()
+            return Players:GetUserIdFromNameAsync(farmUsername)
+        end)
+        if not ok or not targetId then
+            resolvedLbl.Text = "Username not found"
+            resolvedLbl.TextColor3 = C.danger
+            locateBtn.Active=true; locateBtn.Text="🔍 Locate Target Plot"; return
         end
-        if not CFG.targetOwner then
-            CFG.targetOwner = names[1]
-        else
-            local idx = 0
-            for i, n in ipairs(names) do if n == CFG.targetOwner then idx = i end end
-            CFG.targetOwner = names[idx + 1]  -- nil when past the end
+        log(string.format("Resolved: %s → ID %d", farmUsername, targetId), C.accent)
+
+        local centroid = getTargetPlotCentroid(targetId)
+        if not centroid then
+            resolvedLbl.Text = string.format("%s not found in this server", farmUsername)
+            resolvedLbl.TextColor3 = C.danger
+            locateBtn.Active=true; locateBtn.Text="🔍 Locate Target Plot"; return
         end
-        box.Text = (CFG.targetOwner or "Any planted plot") .. " ▾"
+
+        -- Find target plotId
+        local targetPlotId = nil
+        for _, garden in ipairs(Workspace.Gardens:GetChildren()) do
+            local ownerUserId = garden:GetAttribute("OwnerUserId")
+            local owner = garden:GetAttribute("Owner")
+            if tostring(ownerUserId) == tostring(targetId) or owner == farmUsername then
+                local num = garden.Name:match("Plot(%d+)")
+                if num then targetPlotId = tonumber(num); break end
+            end
+        end
+        if not targetPlotId then
+            targetPlotId = lp:GetAttribute("PlotId")
+            log("Could not find target plotId — using alt plotId as fallback", C.gold)
+        end
+
+        resolvedTargetId = targetId
+        resolvedCentroid = centroid
+        resolvedPlotId   = targetPlotId
+        resolvedUsername = farmUsername
+
+        resolvedLbl.Text = string.format(
+            "%s found (Plot%d)  X=%.1f Y=%.1f Z=%.1f  Ready",
+            farmUsername, targetPlotId, centroid.X, centroid.Y, centroid.Z)
+        resolvedLbl.TextColor3 = C.accent
+
+        fireBtn.Active = true
+        fireBtn.BackgroundColor3 = C.dangerD
+        fireBtn.TextColor3 = C.danger
+        locateBtn.Active=true; locateBtn.Text="🔍 Locate Target Plot"
     end)
-end
+end)
 
--- status line
-local status = Instance.new("TextLabel")
-status.Size = UDim2.new(1, -16, 0, 40)
-status.Position = UDim2.new(0, 8, 1, -48)
-status.BackgroundColor3 = C.card
-status.Text = "idle"
-status.TextColor3 = C.dim
-status.Font = Enum.Font.Gotham
-status.TextSize = 12
-status.TextWrapped = true
-status.Parent = panel
-corner(status, 8)
-local function log(s) status.Text = s; print("[FriendHelper] " .. s) end
+-- =====================
+-- FIRE
+-- =====================
+local firing = false
 
-sectionLabel("CONTROLS", C.dim)
-toggleButton("■ STOP SPRINKLERS", "▶ START SPRINKLERS",
-    function() return _G.GAG_SprRunning end,
-    function()
-        _G.GAG_SprRunning = not _G.GAG_SprRunning
-        if _G.GAG_SprRunning then task.spawn(function() sprinklerLoop(log) end) end
+fireBtn.MouseButton1Click:Connect(function()
+    if firing then return end
+    if not resolvedCentroid then
+        resolvedLbl.Text = "Press Locate first"
+        resolvedLbl.TextColor3 = C.danger; return
+    end
+
+    firing = true
+    fireBtn.Active = false; fireBtn.Text = "Running..."
+    resolvedLbl.TextColor3 = C.gold
+
+    task.spawn(function()
+        local centroid   = resolvedCentroid
+        local plotId     = resolvedPlotId
+        local char       = lp.Character
+        local hum        = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp        = char and char:FindFirstChild("HumanoidRootPart")
+
+        if not hum or not hrp then
+            log("No humanoid on alt", C.danger)
+            firing=false; fireBtn.Active=true; fireBtn.Text="🚨 Fire Emergency Regrow"; return
+        end
+
+        -- 4 sets tight around centroid
+        -- Sprinklers: tiny triangle (2 stud radius) + center
+        -- Watering cans: all within 1 stud of centroid, different offsets
+        local R = 2
+        local sets = {
+            {   -- Set 1: center
+                spr   = Vector3.new(centroid.X,            centroid.Y, centroid.Z),
+                water = Vector3.new(centroid.X + 1,        centroid.Y, centroid.Z),
+                label = "Center",
+            },
+            {   -- Set 2: north
+                spr   = Vector3.new(centroid.X,            centroid.Y, centroid.Z - R),
+                water = Vector3.new(centroid.X,            centroid.Y, centroid.Z - 1),
+                label = "North",
+            },
+            {   -- Set 3: southeast
+                spr   = Vector3.new(centroid.X + R*0.866, centroid.Y, centroid.Z + R*0.5),
+                water = Vector3.new(centroid.X + 1,        centroid.Y, centroid.Z + 1),
+                label = "Southeast",
+            },
+            {   -- Set 4: southwest
+                spr   = Vector3.new(centroid.X - R*0.866, centroid.Y, centroid.Z + R*0.5),
+                water = Vector3.new(centroid.X - 1,        centroid.Y, centroid.Z + 1),
+                label = "Southwest",
+            },
+        }
+
+        local sprPlaced = 0
+        local waterFired = 0
+
+        for i, set in ipairs(sets) do
+            log(string.format("── Set %d/4: %s ──", i, set.label), C.gold)
+            resolvedLbl.Text = string.format("Set %d/4: %s", i, set.label)
+            resolvedLbl.TextColor3 = C.gold
+
+            -- Place sprinkler
+            local sprTool = findTool("super sprinkler")
+            if not sprTool then
+                log(string.format("No Super Sprinkler left — stopping at set %d", i), C.danger)
+                break
+            end
+
+            local sprName = sprTool:GetAttribute("Sprinkler") or sprTool.Name
+            hum:EquipTool(sprTool)
+            task.wait(0.4)
+            hrp.CFrame = CFrame.new(set.spr + Vector3.new(0, 5, 0))
+            task.wait(0.3)
+
+            local spOk, spErr = pcall(function()
+                Networking.Place.PlaceSprinkler:Fire(set.spr, sprName, sprTool, plotId)
+            end)
+            if spOk then
+                sprPlaced = sprPlaced + 1
+                log(string.format("  Sprinkler ✓ X=%.1f Z=%.1f", set.spr.X, set.spr.Z), C.accent)
+            else
+                log("  Sprinkler ERR: "..tostring(spErr):sub(1,50), C.danger)
+            end
+            task.wait(0.8)
+
+            -- Fire watering can
+            local wTool = findTool("super watering can")
+            if not wTool then
+                log(string.format("No Super Watering Can left — stopping at set %d", i), C.danger)
+                break
+            end
+
+            hum:EquipTool(wTool)
+            task.wait(0.5)
+            hrp.CFrame = CFrame.new(set.water + Vector3.new(0, 5, 0))
+            task.wait(0.3)
+
+            local wOk, wErr = pcall(function()
+                Networking.WateringCan.UseWateringCan:Fire(set.water, wTool.Name, wTool)
+            end)
+            if wOk then
+                waterFired = waterFired + 1
+                log(string.format("  Watering can ✓ X=%.1f Z=%.1f", set.water.X, set.water.Z),
+                    Color3.fromRGB(80,160,255))
+            else
+                log("  Watering can ERR: "..tostring(wErr):sub(1,50), C.danger)
+            end
+            task.wait(0.8)
+
+            -- 30 second cooldown between sets (skip after last set)
+            if i < #sets then
+                log(string.format("  Cooldown 50s before set %d...", i+1), C.muted)
+                for countdown = 50, 1, -1 do
+                    if not firing then break end
+                    resolvedLbl.Text = string.format("Set %d/4 done — next in %ds", i, countdown)
+                    task.wait(1)
+                end
+            end
+        end
+
+        log(string.format("── Multi-cycle regrow complete: %d/4 sprinklers  %d/4 cans ──", sprPlaced, waterFired), C.gold)
+        resolvedLbl.Text = string.format("Done! Sprinklers: %d/4  Cans: %d/4", sprPlaced, waterFired)
+        resolvedLbl.TextColor3 = sprPlaced > 0 and waterFired > 0 and C.accent or C.gold
+
+        firing = false
+        fireBtn.Active = true
+        fireBtn.Text = "🚨 Fire Emergency Regrow"
+        fireBtn.BackgroundColor3 = C.dangerD
+        fireBtn.TextColor3 = C.danger
     end)
-toggleButton("■ STOP WATERING", "▶ START WATERING",
-    function() return _G.GAG_CanRunning end,
-    function()
-        _G.GAG_CanRunning = not _G.GAG_CanRunning
-        if _G.GAG_CanRunning then task.spawn(function() waterLoop(log) end) end
-    end)
+end)
 
-do
-    local disc = Instance.new("TextButton")
-    disc.Size = UDim2.new(1, 0, 0, 44)
-    disc.BackgroundColor3 = C.blue
-    disc.Text = "🔍 Discover Remotes"
-    disc.TextColor3 = C.text
-    disc.Font = Enum.Font.GothamBold
-    disc.TextSize = 14
-    disc.Parent = body
-    corner(disc, 10)
-    disc.MouseButton1Click:Connect(function() discover(log) end)
-end
-
-log("loaded — pick sprinklers, cans & target, then START")
+log("Multi-Cycle Regrow loaded — run this on the ALT", C.accent)
+log("Needs: 4x Super Sprinkler + 4x Super Watering Can", C.muted)
+log("Alt must be in same server as farming account", C.muted)
+print("[GAG2 Emergency Regrow v2] Loaded.")
