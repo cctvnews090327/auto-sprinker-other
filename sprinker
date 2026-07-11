@@ -177,7 +177,6 @@ end
 
 -- try several arg orders for PlaceSprinkler (confirmed remote path: Networking.Place.PlaceSprinkler)
 local function firePlaceSprinkler(pos, itemName, tool)
-    local place = Networking:FindFirstChild and nil -- Networking is a table, not instance
     local ok = false
     local remote = Networking.Place and Networking.Place.PlaceSprinkler
     if not remote then return false, "no PlaceSprinkler remote" end
