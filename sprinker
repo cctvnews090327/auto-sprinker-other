@@ -24,7 +24,7 @@ local Networking = require(RS.SharedModules.Networking)
 -- CONFIG
 -- =====================
 local WATER_CYCLES     = 20     -- total watering fires
-local WATER_INTERVAL   = 15      -- seconds between watering fires
+local WATER_INTERVAL   = 8      -- seconds between watering fires
 local SPRINKLER_LIFE   = 120    -- 2 minutes
 local SPRINKLER_TAG    = "Sprinkler"  -- attribute / name hint
 
