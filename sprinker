@@ -1,8 +1,8 @@
 -- ============================================================
--- GAG2 Emergency Regrow v3.1
+-- GAG2 Emergency Regrow v3.2
 -- Changes vs v3:
---   * Added editable "Watering cycles" textbox in UI
---     (validates 1-200, updates WATER_CYCLES live)
+--   * Added editable "Watering cycles" textbox (1-200)
+--   * Added editable "Interval (s)" textbox (1-600)
 -- ============================================================
 
 if game:GetService("CoreGui"):FindFirstChild("GAG_EmerRegrow") then
@@ -74,7 +74,7 @@ Instance.new("UICorner",main).CornerRadius=UDim.new(0,10)
 Instance.new("UIStroke",main).Color=C.border
 
 local hdr = mkFrame(main,UDim2.new(1,0,0,32),UDim2.new(0,0,0,0),C.header,10)
-mkLabel(hdr,"💧 Multi-Cycle Regrow v3.1",UDim2.new(1,-40,1,0),UDim2.new(0,10,0,0),C.water,12,true)
+mkLabel(hdr,"💧 Multi-Cycle Regrow v3.2",UDim2.new(1,-40,1,0),UDim2.new(0,10,0,0),C.water,12,true)
 mkBtn(hdr,"✕",UDim2.new(0,24,0,20),UDim2.new(1,-28,0.5,-10),C.dangerD,C.danger,
     function() gui:Destroy() end)
 
@@ -83,10 +83,10 @@ Instance.new("UIStroke",banner).Color=C.accentD
 local bannerLbl = mkLabel(banner,("1x Sprinkler (auto-refreshes) + %dx Watering every %ds"):format(WATER_CYCLES,WATER_INTERVAL),
     UDim2.new(1,-8,1,0),UDim2.new(0,4,0,0),C.muted,8,false,Enum.TextXAlignment.Center)
 
--- Watering cycles input
-mkLabel(main,"Watering cycles:",UDim2.new(0,110,0,14),UDim2.new(0,8,0,86),C.muted,9)
+-- Cycles + Interval inputs (side by side)
+mkLabel(main,"Cycles:",UDim2.new(0,50,0,14),UDim2.new(0,8,0,86),C.muted,9)
 local cyclesF = Instance.new("Frame",main)
-cyclesF.Size=UDim2.new(0,80,0,22); cyclesF.Position=UDim2.new(0,120,0,82)
+cyclesF.Size=UDim2.new(0,60,0,22); cyclesF.Position=UDim2.new(0,60,0,82)
 cyclesF.BackgroundColor3=C.panel; cyclesF.BorderSizePixel=0
 Instance.new("UICorner",cyclesF).CornerRadius=UDim.new(0,4)
 Instance.new("UIStroke",cyclesF).Color=C.border
@@ -98,6 +98,21 @@ cyclesInput.TextColor3=C.water; cyclesInput.TextSize=11
 cyclesInput.Font=Enum.Font.GothamBold; cyclesInput.ClearTextOnFocus=false
 cyclesInput.PlaceholderText="10"; cyclesInput.PlaceholderColor3=C.muted
 cyclesInput.TextXAlignment=Enum.TextXAlignment.Center
+
+mkLabel(main,"Interval (s):",UDim2.new(0,70,0,14),UDim2.new(0,134,0,86),C.muted,9)
+local intervalF = Instance.new("Frame",main)
+intervalF.Size=UDim2.new(0,60,0,22); intervalF.Position=UDim2.new(0,204,0,82)
+intervalF.BackgroundColor3=C.panel; intervalF.BorderSizePixel=0
+Instance.new("UICorner",intervalF).CornerRadius=UDim.new(0,4)
+Instance.new("UIStroke",intervalF).Color=C.border
+local intervalInput = Instance.new("TextBox",intervalF)
+intervalInput.Size=UDim2.new(1,-8,1,0); intervalInput.Position=UDim2.new(0,4,0,0)
+intervalInput.BackgroundTransparency=1
+intervalInput.Text=tostring(WATER_INTERVAL)
+intervalInput.TextColor3=C.water; intervalInput.TextSize=11
+intervalInput.Font=Enum.Font.GothamBold; intervalInput.ClearTextOnFocus=false
+intervalInput.PlaceholderText="15"; intervalInput.PlaceholderColor3=C.muted
+intervalInput.TextXAlignment=Enum.TextXAlignment.Center
 
 -- Farming account username
 mkLabel(main,"Farming account username:",UDim2.new(1,-16,0,14),UDim2.new(0,8,0,118),C.muted,9)
@@ -172,6 +187,19 @@ cyclesInput.FocusLost:Connect(function()
     else
         cyclesInput.Text = tostring(WATER_CYCLES)
         log("Invalid cycle count (must be 1-200)", C.danger)
+    end
+end)
+
+intervalInput.FocusLost:Connect(function()
+    local n = tonumber(intervalInput.Text)
+    if n and n > 0 and n <= 600 then
+        WATER_INTERVAL = math.floor(n)
+        intervalInput.Text = tostring(WATER_INTERVAL)
+        bannerLbl.Text = ("1x Sprinkler (auto-refreshes) + %dx Watering every %ds"):format(WATER_CYCLES,WATER_INTERVAL)
+        log(("Interval set to %ds"):format(WATER_INTERVAL), C.water)
+    else
+        intervalInput.Text = tostring(WATER_INTERVAL)
+        log("Invalid interval (must be 1-600 seconds)", C.danger)
     end
 end)
 
@@ -395,7 +423,8 @@ fireBtn.MouseButton1Click:Connect(function()
         local centroid = resolvedCentroid
         local plotId   = resolvedPlotId
         local garden   = resolvedGarden
-        local totalCycles = WATER_CYCLES  -- snapshot at run start
+        local totalCycles = WATER_CYCLES     -- snapshot at run start
+        local intervalSec = WATER_INTERVAL   -- snapshot at run start
         local char = lp.Character
         local hum  = char and char:FindFirstChildOfClass("Humanoid")
         local hrp  = char and char:FindFirstChild("HumanoidRootPart")
@@ -455,7 +484,7 @@ fireBtn.MouseButton1Click:Connect(function()
             end
 
             if i < totalCycles then
-                for s = WATER_INTERVAL, 1, -1 do
+                for s = intervalSec, 1, -1 do
                     if not firing then break end
                     resolvedLbl.Text = ("Water %d/%d done — next in %ds"):format(i,totalCycles,s)
                     task.wait(1)
@@ -477,4 +506,4 @@ end)
 log("Multi-Cycle Regrow v3.1 loaded", C.accent)
 log(("Config: %d water cycles @ %ds, sprinkler life %ds"):format(WATER_CYCLES,WATER_INTERVAL,SPRINKLER_LIFE), C.muted)
 log("Tip: Edit cycles textbox, then Locate + Fire", C.muted)
-print("[GAG2 Emergency Regrow v3.1] Loaded.")
+print("[GAG2 Emergency Regrow v3.2] Loaded.")
