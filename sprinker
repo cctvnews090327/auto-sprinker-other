@@ -1,8 +1,11 @@
 -- ============================================================
--- GAG2 Emergency Regrow v3.2
--- Changes vs v3:
---   * Added editable "Watering cycles" textbox (1-200)
---   * Added editable "Interval (s)" textbox (1-600)
+-- GAG2 Emergency Regrow v3.3
+-- Changes vs v3.3:
+--   * Sprinkler presence is verified BEFORE every water fire,
+--     not only when the 2-min timer expires. If missing (never
+--     placed, destroyed, or replicated elsewhere), it re-places.
+--   * Initial + mid-loop placements now verify + retry once if
+--     the sprinkler didn't register on the garden.
 -- ============================================================
 
 if game:GetService("CoreGui"):FindFirstChild("GAG_EmerRegrow") then
@@ -74,7 +77,7 @@ Instance.new("UICorner",main).CornerRadius=UDim.new(0,10)
 Instance.new("UIStroke",main).Color=C.border
 
 local hdr = mkFrame(main,UDim2.new(1,0,0,32),UDim2.new(0,0,0,0),C.header,10)
-mkLabel(hdr,"💧 Multi-Cycle Regrow v3.2",UDim2.new(1,-40,1,0),UDim2.new(0,10,0,0),C.water,12,true)
+mkLabel(hdr,"💧 Multi-Cycle Regrow v3.3",UDim2.new(1,-40,1,0),UDim2.new(0,10,0,0),C.water,12,true)
 mkBtn(hdr,"✕",UDim2.new(0,24,0,20),UDim2.new(1,-28,0.5,-10),C.dangerD,C.danger,
     function() gui:Destroy() end)
 
@@ -446,29 +449,62 @@ fireBtn.MouseButton1Click:Connect(function()
                 sprCount = sprCount + 1
                 sprinklerPlacedAt = os.clock()
                 log("Sprinkler placed ✓", C.accent)
+                task.wait(0.5)
+                -- Verify it landed; retry once if not
+                if not sprinklerExistsOnGarden(garden, centroid) then
+                    log("Initial sprinkler didn't register — retrying", C.gold)
+                    local ok2,err2 = placeSprinkler(centroid, plotId, hum, hrp)
+                    if ok2 then
+                        sprCount = sprCount + 1
+                        sprinklerPlacedAt = os.clock()
+                        log("Retry ✓", C.accent)
+                    else
+                        log("Retry ERR: "..tostring(err2), C.danger)
+                    end
+                    task.wait(0.5)
+                end
             else
                 log("Sprinkler place failed: "..tostring(err), C.danger)
+                task.wait(0.5)
             end
-            task.wait(0.5)
         end
 
         for i = 1, totalCycles do
             if not firing then log("Stopped by user", C.gold); break end
 
-            if os.clock() - sprinklerPlacedAt >= SPRINKLER_LIFE then
-                if not sprinklerExistsOnGarden(garden, centroid) then
-                    log(("[cycle %d] Sprinkler expired — re-placing"):format(i), C.gold)
-                    local ok,err = placeSprinkler(centroid, plotId, hum, hrp)
-                    if ok then
-                        sprCount = sprCount + 1
-                        sprinklerPlacedAt = os.clock()
-                        log("  Sprinkler ✓", C.accent)
-                    else
-                        log("  Sprinkler ERR: "..tostring(err), C.danger)
-                    end
-                    task.wait(0.4)
-                else
+            -- Always verify a sprinkler is present before watering.
+            -- Re-place if missing OR if lifetime expired.
+            local needSprinkler = false
+            local reason = ""
+            if not sprinklerExistsOnGarden(garden, centroid) then
+                needSprinkler = true; reason = "missing"
+            elseif os.clock() - sprinklerPlacedAt >= SPRINKLER_LIFE then
+                needSprinkler = true; reason = "expired"
+            end
+
+            if needSprinkler then
+                log(("[cycle %d] Sprinkler %s — placing"):format(i, reason), C.gold)
+                local ok,err = placeSprinkler(centroid, plotId, hum, hrp)
+                if ok then
+                    sprCount = sprCount + 1
                     sprinklerPlacedAt = os.clock()
+                    log("  Sprinkler ✓", C.accent)
+                    task.wait(0.4)
+                    -- Verify it actually landed; retry once if not
+                    if not sprinklerExistsOnGarden(garden, centroid) then
+                        log("  Sprinkler didn't register — retrying", C.gold)
+                        local ok2,err2 = placeSprinkler(centroid, plotId, hum, hrp)
+                        if ok2 then
+                            sprCount = sprCount + 1
+                            sprinklerPlacedAt = os.clock()
+                            log("  Sprinkler retry ✓", C.accent)
+                        else
+                            log("  Retry ERR: "..tostring(err2), C.danger)
+                        end
+                        task.wait(0.4)
+                    end
+                else
+                    log("  Sprinkler ERR: "..tostring(err), C.danger)
                 end
             end
 
@@ -506,4 +542,4 @@ end)
 log("Multi-Cycle Regrow v3.1 loaded", C.accent)
 log(("Config: %d water cycles @ %ds, sprinkler life %ds"):format(WATER_CYCLES,WATER_INTERVAL,SPRINKLER_LIFE), C.muted)
 log("Tip: Edit cycles textbox, then Locate + Fire", C.muted)
-print("[GAG2 Emergency Regrow v3.2] Loaded.")
+print("[GAG2 Emergency Regrow v3.3] Loaded.")
