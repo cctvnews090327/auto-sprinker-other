@@ -1,12 +1,8 @@
 -- ============================================================
--- GAG2 Emergency Regrow v3
--- Changes vs v2:
---   * 20 cycles (1 sprinkler up-front, then 20x water every 8s)
---   * All watering at plot centroid (no N/E/S/W spread)
---   * Sprinkler has 2min lifetime; auto re-places when expired
---   * Sprinkler only placed if none currently on the target garden
---   * "Hide Plants" button — hides all but 1 plant client-side (lag fix)
---   * Watering-can lifetime treated as 7-10s (fires every 6s)
+-- GAG2 Emergency Regrow v3.1
+-- Changes vs v3:
+--   * Added editable "Watering cycles" textbox in UI
+--     (validates 1-200, updates WATER_CYCLES live)
 -- ============================================================
 
 if game:GetService("CoreGui"):FindFirstChild("GAG_EmerRegrow") then
@@ -23,10 +19,10 @@ local Networking = require(RS.SharedModules.Networking)
 -- =====================
 -- CONFIG
 -- =====================
-local WATER_CYCLES     = 10     -- total watering fires
-local WATER_INTERVAL   = 15      -- seconds between watering fires
+local WATER_CYCLES     = 10     -- total watering fires (editable in UI)
+local WATER_INTERVAL   = 15     -- seconds between watering fires
 local SPRINKLER_LIFE   = 120    -- 2 minutes
-local SPRINKLER_TAG    = "Sprinkler"  -- attribute / name hint
+local SPRINKLER_TAG    = "Sprinkler"
 
 local C = {
     bg=Color3.fromRGB(14,14,20), panel=Color3.fromRGB(20,20,28),
@@ -64,7 +60,7 @@ end
 -- =====================
 -- WINDOW
 -- =====================
-local W,H = 340, 460
+local W,H = 340, 494
 local gui = Instance.new("ScreenGui")
 gui.Name="GAG_EmerRegrow"; gui.ResetOnSpawn=false
 gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling; gui.Parent=CoreGui
@@ -78,18 +74,35 @@ Instance.new("UICorner",main).CornerRadius=UDim.new(0,10)
 Instance.new("UIStroke",main).Color=C.border
 
 local hdr = mkFrame(main,UDim2.new(1,0,0,32),UDim2.new(0,0,0,0),C.header,10)
-mkLabel(hdr,"💧 Multi-Cycle Regrow v3",UDim2.new(1,-40,1,0),UDim2.new(0,10,0,0),C.water,12,true)
+mkLabel(hdr,"💧 Multi-Cycle Regrow v3.1",UDim2.new(1,-40,1,0),UDim2.new(0,10,0,0),C.water,12,true)
 mkBtn(hdr,"✕",UDim2.new(0,24,0,20),UDim2.new(1,-28,0.5,-10),C.dangerD,C.danger,
     function() gui:Destroy() end)
 
 local banner = mkFrame(main,UDim2.new(1,-16,0,36),UDim2.new(0,8,0,40),Color3.fromRGB(20,30,20),6)
 Instance.new("UIStroke",banner).Color=C.accentD
-mkLabel(banner,("1x Sprinkler (auto-refreshes) + %dx Watering every %ds"):format(WATER_CYCLES,WATER_INTERVAL),
+local bannerLbl = mkLabel(banner,("1x Sprinkler (auto-refreshes) + %dx Watering every %ds"):format(WATER_CYCLES,WATER_INTERVAL),
     UDim2.new(1,-8,1,0),UDim2.new(0,4,0,0),C.muted,8,false,Enum.TextXAlignment.Center)
 
-mkLabel(main,"Farming account username:",UDim2.new(1,-16,0,14),UDim2.new(0,8,0,84),C.muted,9)
+-- Watering cycles input
+mkLabel(main,"Watering cycles:",UDim2.new(0,110,0,14),UDim2.new(0,8,0,86),C.muted,9)
+local cyclesF = Instance.new("Frame",main)
+cyclesF.Size=UDim2.new(0,80,0,22); cyclesF.Position=UDim2.new(0,120,0,82)
+cyclesF.BackgroundColor3=C.panel; cyclesF.BorderSizePixel=0
+Instance.new("UICorner",cyclesF).CornerRadius=UDim.new(0,4)
+Instance.new("UIStroke",cyclesF).Color=C.border
+local cyclesInput = Instance.new("TextBox",cyclesF)
+cyclesInput.Size=UDim2.new(1,-8,1,0); cyclesInput.Position=UDim2.new(0,4,0,0)
+cyclesInput.BackgroundTransparency=1
+cyclesInput.Text=tostring(WATER_CYCLES)
+cyclesInput.TextColor3=C.water; cyclesInput.TextSize=11
+cyclesInput.Font=Enum.Font.GothamBold; cyclesInput.ClearTextOnFocus=false
+cyclesInput.PlaceholderText="10"; cyclesInput.PlaceholderColor3=C.muted
+cyclesInput.TextXAlignment=Enum.TextXAlignment.Center
+
+-- Farming account username
+mkLabel(main,"Farming account username:",UDim2.new(1,-16,0,14),UDim2.new(0,8,0,118),C.muted,9)
 local recipF = Instance.new("Frame",main)
-recipF.Size=UDim2.new(1,-16,0,24); recipF.Position=UDim2.new(0,8,0,100)
+recipF.Size=UDim2.new(1,-16,0,24); recipF.Position=UDim2.new(0,8,0,134)
 recipF.BackgroundColor3=C.panel; recipF.BorderSizePixel=0
 Instance.new("UICorner",recipF).CornerRadius=UDim.new(0,4)
 Instance.new("UIStroke",recipF).Color=C.border
@@ -102,26 +115,24 @@ farmUserInput.PlaceholderText="farming account username"
 farmUserInput.PlaceholderColor3=C.muted
 
 local locateBtn = mkBtn(main,"🔍 Locate Target Plot",
-    UDim2.new(1,-16,0,26),UDim2.new(0,8,0,132),
+    UDim2.new(1,-16,0,26),UDim2.new(0,8,0,166),
     Color3.fromRGB(25,35,65),C.water)
 
 local resolvedLbl = mkLabel(main,"Press Locate first to verify target plot",
-    UDim2.new(1,-16,0,32),UDim2.new(0,8,0,166),C.muted,9,false,Enum.TextXAlignment.Center)
+    UDim2.new(1,-16,0,32),UDim2.new(0,8,0,200),C.muted,9,false,Enum.TextXAlignment.Center)
 
--- Hide plants button (purple)
 local hideBtn = mkBtn(main,"👁 Hide Plants (keep 1 for lag)",
-    UDim2.new(1,-16,0,26),UDim2.new(0,8,0,206),
+    UDim2.new(1,-16,0,26),UDim2.new(0,8,0,240),
     C.purpleD,C.purple)
 
--- Fire button
 local fireBtn = mkBtn(main,"🚨 Fire Emergency Regrow",
-    UDim2.new(1,-16,0,28),UDim2.new(0,8,0,240),
+    UDim2.new(1,-16,0,28),UDim2.new(0,8,0,274),
     Color3.fromRGB(30,15,15),Color3.fromRGB(100,40,40))
 fireBtn.Active=false
 
 -- Log
 local logScroll = Instance.new("ScrollingFrame",main)
-logScroll.Size=UDim2.new(1,-16,0,176); logScroll.Position=UDim2.new(0,8,0,276)
+logScroll.Size=UDim2.new(1,-16,0,176); logScroll.Position=UDim2.new(0,8,0,310)
 logScroll.BackgroundColor3=C.panel; logScroll.BorderSizePixel=0
 logScroll.ScrollBarThickness=3; logScroll.ScrollBarImageColor3=C.border
 logScroll.CanvasSize=UDim2.new(0,0,0,0)
@@ -150,6 +161,20 @@ local function log(msg,col)
     end)
 end
 
+-- Wire up cycles input (needs log() defined)
+cyclesInput.FocusLost:Connect(function()
+    local n = tonumber(cyclesInput.Text)
+    if n and n > 0 and n <= 200 then
+        WATER_CYCLES = math.floor(n)
+        cyclesInput.Text = tostring(WATER_CYCLES)
+        bannerLbl.Text = ("1x Sprinkler (auto-refreshes) + %dx Watering every %ds"):format(WATER_CYCLES,WATER_INTERVAL)
+        log(("Watering cycles set to %d"):format(WATER_CYCLES), C.water)
+    else
+        cyclesInput.Text = tostring(WATER_CYCLES)
+        log("Invalid cycle count (must be 1-200)", C.danger)
+    end
+end)
+
 -- =====================
 -- STATE
 -- =====================
@@ -167,7 +192,6 @@ local function getTargetGarden(targetUserId, username)
             return g
         end
     end
-    -- fallback: scan plants for userId prefix in names
     local uid=tostring(targetUserId)
     for _,g in ipairs(Workspace.Gardens:GetChildren()) do
         local plants=g:FindFirstChild("Plants")
@@ -217,10 +241,6 @@ local function findTool(namePattern)
     return nil
 end
 
--- Check if a sprinkler exists on the target garden.
--- Sprinklers get parented into the garden (folder like "Sprinklers" or as models
--- with "Sprinkler" in name). Scan garden descendants for any BasePart/Model
--- named with "Sprinkler" within radius of centroid.
 local function sprinklerExistsOnGarden(garden, centroid, radius)
     radius = radius or 40
     if not garden then return false end
@@ -293,10 +313,8 @@ locateBtn.MouseButton1Click:Connect(function()
 end)
 
 -- =====================
--- HIDE PLANTS (client-side lag fix)
--- Keeps first plant visible, hides the rest.
+-- HIDE PLANTS
 -- =====================
--- Client-side destroy: cannot be undone without rejoin.
 hideBtn.MouseButton1Click:Connect(function()
     if not resolvedGarden then
         log("Locate a plot first", C.danger); return
@@ -377,6 +395,7 @@ fireBtn.MouseButton1Click:Connect(function()
         local centroid = resolvedCentroid
         local plotId   = resolvedPlotId
         local garden   = resolvedGarden
+        local totalCycles = WATER_CYCLES  -- snapshot at run start
         local char = lp.Character
         local hum  = char and char:FindFirstChildOfClass("Humanoid")
         local hrp  = char and char:FindFirstChild("HumanoidRootPart")
@@ -389,10 +408,9 @@ fireBtn.MouseButton1Click:Connect(function()
         local sprinklerPlacedAt = 0
         local sprCount, waterCount = 0, 0
 
-        -- Initial sprinkler (only if none present)
         if sprinklerExistsOnGarden(garden, centroid) then
             log("Sprinkler already on garden — skipping initial place", C.muted)
-            sprinklerPlacedAt = os.clock()  -- assume fresh enough
+            sprinklerPlacedAt = os.clock()
         else
             local ok,err = placeSprinkler(centroid, plotId, hum, hrp)
             if ok then
@@ -405,11 +423,9 @@ fireBtn.MouseButton1Click:Connect(function()
             task.wait(0.5)
         end
 
-        -- 20 watering cycles, every 6s
-        for i = 1, WATER_CYCLES do
+        for i = 1, totalCycles do
             if not firing then log("Stopped by user", C.gold); break end
 
-            -- Refresh sprinkler if expired AND none on garden
             if os.clock() - sprinklerPlacedAt >= SPRINKLER_LIFE then
                 if not sprinklerExistsOnGarden(garden, centroid) then
                     log(("[cycle %d] Sprinkler expired — re-placing"):format(i), C.gold)
@@ -423,34 +439,32 @@ fireBtn.MouseButton1Click:Connect(function()
                     end
                     task.wait(0.4)
                 else
-                    -- still one there somehow, refresh timer
                     sprinklerPlacedAt = os.clock()
                 end
             end
 
-            resolvedLbl.Text = ("Watering %d/%d"):format(i, WATER_CYCLES)
+            resolvedLbl.Text = ("Watering %d/%d"):format(i, totalCycles)
             resolvedLbl.TextColor3 = C.water
 
             local ok,err = fireWater(centroid, hum, hrp)
             if ok then
                 waterCount = waterCount + 1
-                log(("  [%d/%d] Water ✓"):format(i,WATER_CYCLES), C.water)
+                log(("  [%d/%d] Water ✓"):format(i,totalCycles), C.water)
             else
-                log(("  [%d/%d] Water ERR: %s"):format(i,WATER_CYCLES,tostring(err)), C.danger)
+                log(("  [%d/%d] Water ERR: %s"):format(i,totalCycles,tostring(err)), C.danger)
             end
 
-            -- Wait interval (unless last)
-            if i < WATER_CYCLES then
+            if i < totalCycles then
                 for s = WATER_INTERVAL, 1, -1 do
                     if not firing then break end
-                    resolvedLbl.Text = ("Water %d/%d done — next in %ds"):format(i,WATER_CYCLES,s)
+                    resolvedLbl.Text = ("Water %d/%d done — next in %ds"):format(i,totalCycles,s)
                     task.wait(1)
                 end
             end
         end
 
         log(("── Complete: %d sprinkler(s), %d water fires ──"):format(sprCount,waterCount), C.gold)
-        resolvedLbl.Text = ("Done! Sprinklers: %d  Waters: %d/%d"):format(sprCount,waterCount,WATER_CYCLES)
+        resolvedLbl.Text = ("Done! Sprinklers: %d  Waters: %d/%d"):format(sprCount,waterCount,totalCycles)
         resolvedLbl.TextColor3 = waterCount>0 and C.accent or C.gold
 
         firing = false
@@ -460,7 +474,7 @@ fireBtn.MouseButton1Click:Connect(function()
     end)
 end)
 
-log("Multi-Cycle Regrow v3 loaded", C.accent)
+log("Multi-Cycle Regrow v3.1 loaded", C.accent)
 log(("Config: %d water cycles @ %ds, sprinkler life %ds"):format(WATER_CYCLES,WATER_INTERVAL,SPRINKLER_LIFE), C.muted)
-log("Tip: Hide Plants after Locate to reduce lag", C.muted)
-print("[GAG2 Emergency Regrow v3] Loaded.")
+log("Tip: Edit cycles textbox, then Locate + Fire", C.muted)
+print("[GAG2 Emergency Regrow v3.1] Loaded.")
