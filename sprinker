@@ -1,11 +1,11 @@
 -- ============================================================
--- GAG2 Emergency Regrow v3.3
+-- GAG2 Emergency Regrow v3.4
 -- Changes vs v3.3:
---   * Sprinkler presence is verified BEFORE every water fire,
---     not only when the 2-min timer expires. If missing (never
---     placed, destroyed, or replicated elsewhere), it re-places.
---   * Initial + mid-loop placements now verify + retry once if
---     the sprinkler didn't register on the garden.
+--   * Sprinkler is placed on an OPEN spot on the garden (a
+--     PlantArea tile with the most clearance from plants),
+--     not directly on top of the plants.
+--   * Watering still fires at the plant centroid so the can's
+--     splash covers the crops.
 -- ============================================================
 
 if game:GetService("CoreGui"):FindFirstChild("GAG_EmerRegrow") then
@@ -77,7 +77,7 @@ Instance.new("UICorner",main).CornerRadius=UDim.new(0,10)
 Instance.new("UIStroke",main).Color=C.border
 
 local hdr = mkFrame(main,UDim2.new(1,0,0,32),UDim2.new(0,0,0,0),C.header,10)
-mkLabel(hdr,"💧 Multi-Cycle Regrow v3.3",UDim2.new(1,-40,1,0),UDim2.new(0,10,0,0),C.water,12,true)
+mkLabel(hdr,"💧 Multi-Cycle Regrow v3.4",UDim2.new(1,-40,1,0),UDim2.new(0,10,0,0),C.water,12,true)
 mkBtn(hdr,"✕",UDim2.new(0,24,0,20),UDim2.new(1,-28,0.5,-10),C.dangerD,C.danger,
     function() gui:Destroy() end)
 
@@ -272,6 +272,82 @@ local function findTool(namePattern)
     return nil
 end
 
+-- Find a spot on the garden that is NOT on top of a plant.
+-- Strategy:
+--   1. Collect all PlantArea parts inside this garden.
+--   2. Collect all existing plant XZ positions in the garden.
+--   3. Sample candidate points across the PlantArea surfaces and
+--      pick the one whose distance to the nearest plant is largest.
+--   4. Fall back to a fixed offset from centroid if nothing found.
+local CollectionService = game:GetService("CollectionService")
+
+local function findOpenSprinklerSpot(garden, centroid)
+    if not garden then return centroid end
+
+    -- gather plant XZ positions
+    local plantPositions = {}
+    local plants = garden:FindFirstChild("Plants")
+    if plants then
+        for _,plant in ipairs(plants:GetChildren()) do
+            local pp = plant.PrimaryPart or plant:FindFirstChildWhichIsA("BasePart")
+            if pp then
+                table.insert(plantPositions, Vector3.new(pp.Position.X, 0, pp.Position.Z))
+            end
+        end
+    end
+
+    local function distToNearestPlant(x, z)
+        local pt = Vector3.new(x, 0, z)
+        local best = math.huge
+        for _,pp in ipairs(plantPositions) do
+            local d = (pt - pp).Magnitude
+            if d < best then best = d end
+        end
+        return best
+    end
+
+    -- gather PlantArea parts belonging to this garden
+    local areas = {}
+    for _,part in ipairs(CollectionService:GetTagged("PlantArea")) do
+        if part:IsDescendantOf(garden) then
+            table.insert(areas, part)
+        end
+    end
+
+    local bestSpot, bestDist = nil, -1
+    -- sample candidates: center of each PlantArea + corners
+    for _,area in ipairs(areas) do
+        local cf = area.CFrame
+        local sx, sz = area.Size.X * 0.5, area.Size.Z * 0.5
+        local candidates = {
+            cf.Position,
+            (cf * CFrame.new( sx*0.9, 0,  sz*0.9)).Position,
+            (cf * CFrame.new(-sx*0.9, 0,  sz*0.9)).Position,
+            (cf * CFrame.new( sx*0.9, 0, -sz*0.9)).Position,
+            (cf * CFrame.new(-sx*0.9, 0, -sz*0.9)).Position,
+            (cf * CFrame.new( sx*0.9, 0, 0)).Position,
+            (cf * CFrame.new(-sx*0.9, 0, 0)).Position,
+            (cf * CFrame.new(0, 0,  sz*0.9)).Position,
+            (cf * CFrame.new(0, 0, -sz*0.9)).Position,
+        }
+        for _,pos in ipairs(candidates) do
+            local d = distToNearestPlant(pos.X, pos.Z)
+            if d > bestDist then
+                bestDist = d
+                bestSpot = Vector3.new(pos.X, pos.Y, pos.Z)
+            end
+        end
+    end
+
+    -- Require at least 4 studs clearance; else fall back
+    if bestSpot and bestDist >= 4 then
+        return bestSpot
+    end
+
+    -- Fallback: push away from centroid by 8 studs on X axis
+    return centroid + Vector3.new(8, 0, 0)
+end
+
 local function sprinklerExistsOnGarden(garden, centroid, radius)
     radius = radius or 40
     if not garden then return false end
@@ -378,16 +454,20 @@ end)
 -- =====================
 local firing=false
 
-local function placeSprinkler(centroid, plotId, hum, hrp)
+local function placeSprinkler(centroid, plotId, hum, hrp, garden)
     local sprTool = findTool("super sprinkler") or findTool("sprinkler")
     if not sprTool then return false, "no sprinkler tool" end
     local sprName = sprTool:GetAttribute("Sprinkler") or sprTool.Name
+
+    -- Pick a spot on the garden that isn't on top of a plant
+    local placePos = findOpenSprinklerSpot(garden, centroid)
+
     hum:EquipTool(sprTool)
     task.wait(0.4)
-    hrp.CFrame = CFrame.new(centroid + Vector3.new(0,5,0))
+    hrp.CFrame = CFrame.new(placePos + Vector3.new(0,5,0))
     task.wait(0.3)
     local ok,err = pcall(function()
-        Networking.Place.PlaceSprinkler:Fire(centroid, sprName, sprTool, plotId)
+        Networking.Place.PlaceSprinkler:Fire(placePos, sprName, sprTool, plotId)
     end)
     if not ok then return false, tostring(err):sub(1,50) end
     return true
@@ -444,7 +524,7 @@ fireBtn.MouseButton1Click:Connect(function()
             log("Sprinkler already on garden — skipping initial place", C.muted)
             sprinklerPlacedAt = os.clock()
         else
-            local ok,err = placeSprinkler(centroid, plotId, hum, hrp)
+            local ok,err = placeSprinkler(centroid, plotId, hum, hrp, garden)
             if ok then
                 sprCount = sprCount + 1
                 sprinklerPlacedAt = os.clock()
@@ -453,7 +533,7 @@ fireBtn.MouseButton1Click:Connect(function()
                 -- Verify it landed; retry once if not
                 if not sprinklerExistsOnGarden(garden, centroid) then
                     log("Initial sprinkler didn't register — retrying", C.gold)
-                    local ok2,err2 = placeSprinkler(centroid, plotId, hum, hrp)
+                    local ok2,err2 = placeSprinkler(centroid, plotId, hum, hrp, garden)
                     if ok2 then
                         sprCount = sprCount + 1
                         sprinklerPlacedAt = os.clock()
@@ -484,7 +564,7 @@ fireBtn.MouseButton1Click:Connect(function()
 
             if needSprinkler then
                 log(("[cycle %d] Sprinkler %s — placing"):format(i, reason), C.gold)
-                local ok,err = placeSprinkler(centroid, plotId, hum, hrp)
+                local ok,err = placeSprinkler(centroid, plotId, hum, hrp, garden)
                 if ok then
                     sprCount = sprCount + 1
                     sprinklerPlacedAt = os.clock()
@@ -493,7 +573,7 @@ fireBtn.MouseButton1Click:Connect(function()
                     -- Verify it actually landed; retry once if not
                     if not sprinklerExistsOnGarden(garden, centroid) then
                         log("  Sprinkler didn't register — retrying", C.gold)
-                        local ok2,err2 = placeSprinkler(centroid, plotId, hum, hrp)
+                        local ok2,err2 = placeSprinkler(centroid, plotId, hum, hrp, garden)
                         if ok2 then
                             sprCount = sprCount + 1
                             sprinklerPlacedAt = os.clock()
@@ -542,4 +622,4 @@ end)
 log("Multi-Cycle Regrow v3.1 loaded", C.accent)
 log(("Config: %d water cycles @ %ds, sprinkler life %ds"):format(WATER_CYCLES,WATER_INTERVAL,SPRINKLER_LIFE), C.muted)
 log("Tip: Edit cycles textbox, then Locate + Fire", C.muted)
-print("[GAG2 Emergency Regrow v3.3] Loaded.")
+print("[GAG2 Emergency Regrow v3.4] Loaded.")
