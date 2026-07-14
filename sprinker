@@ -1,11 +1,11 @@
 -- ============================================================
--- GAG2 Emergency Regrow v3.5
--- Changes vs v3.4:
---   * Sprinkler placement reverted to the PLANT CENTROID so its
---     coverage radius reaches every plant in the cluster.
---   * Only nudges 2-4 studs if a plant sits directly on the
---     centroid point (still well within sprinkler radius).
---   * Watering still fires at the centroid.
+-- GAG2 Emergency Regrow v3.6
+-- Changes vs v3.5:
+--   * NEW: "🌾 Prune All Gardens" button — scans every garden in
+--     the server; for any garden that has plants, destroys all
+--     but 1 plant (client-side, for lag reduction).
+--   * Window grew by 34px to fit the new button; log shrank
+--     accordingly. Layout otherwise identical.
 -- ============================================================
 
 if game:GetService("CoreGui"):FindFirstChild("GAG_EmerRegrow") then
@@ -22,9 +22,9 @@ local Networking = require(RS.SharedModules.Networking)
 -- =====================
 -- CONFIG
 -- =====================
-local WATER_CYCLES     = 10     -- total watering fires (editable in UI)
-local WATER_INTERVAL   = 15     -- seconds between watering fires
-local SPRINKLER_LIFE   = 120    -- 2 minutes
+local WATER_CYCLES     = 10
+local WATER_INTERVAL   = 15
+local SPRINKLER_LIFE   = 120
 local SPRINKLER_TAG    = "Sprinkler"
 
 local C = {
@@ -35,6 +35,7 @@ local C = {
     danger=Color3.fromRGB(220,80,80), dangerD=Color3.fromRGB(70,25,25),
     gold=Color3.fromRGB(255,195,55), water=Color3.fromRGB(80,160,255),
     purple=Color3.fromRGB(160,120,220), purpleD=Color3.fromRGB(45,30,65),
+    teal=Color3.fromRGB(100,200,190), tealD=Color3.fromRGB(25,55,55),
 }
 
 local function mkFrame(p,s,pos,col,r)
@@ -63,7 +64,7 @@ end
 -- =====================
 -- WINDOW
 -- =====================
-local W,H = 340, 494
+local W,H = 340, 528
 local gui = Instance.new("ScreenGui")
 gui.Name="GAG_EmerRegrow"; gui.ResetOnSpawn=false
 gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling; gui.Parent=CoreGui
@@ -77,7 +78,7 @@ Instance.new("UICorner",main).CornerRadius=UDim.new(0,10)
 Instance.new("UIStroke",main).Color=C.border
 
 local hdr = mkFrame(main,UDim2.new(1,0,0,32),UDim2.new(0,0,0,0),C.header,10)
-mkLabel(hdr,"💧 Multi-Cycle Regrow v3.5",UDim2.new(1,-40,1,0),UDim2.new(0,10,0,0),C.water,12,true)
+mkLabel(hdr,"💧 Multi-Cycle Regrow v3.6",UDim2.new(1,-40,1,0),UDim2.new(0,10,0,0),C.water,12,true)
 mkBtn(hdr,"✕",UDim2.new(0,24,0,20),UDim2.new(1,-28,0.5,-10),C.dangerD,C.danger,
     function() gui:Destroy() end)
 
@@ -86,7 +87,6 @@ Instance.new("UIStroke",banner).Color=C.accentD
 local bannerLbl = mkLabel(banner,("1x Sprinkler (auto-refreshes) + %dx Watering every %ds"):format(WATER_CYCLES,WATER_INTERVAL),
     UDim2.new(1,-8,1,0),UDim2.new(0,4,0,0),C.muted,8,false,Enum.TextXAlignment.Center)
 
--- Cycles + Interval inputs (side by side)
 mkLabel(main,"Cycles:",UDim2.new(0,50,0,14),UDim2.new(0,8,0,86),C.muted,9)
 local cyclesF = Instance.new("Frame",main)
 cyclesF.Size=UDim2.new(0,60,0,22); cyclesF.Position=UDim2.new(0,60,0,82)
@@ -117,7 +117,6 @@ intervalInput.Font=Enum.Font.GothamBold; intervalInput.ClearTextOnFocus=false
 intervalInput.PlaceholderText="15"; intervalInput.PlaceholderColor3=C.muted
 intervalInput.TextXAlignment=Enum.TextXAlignment.Center
 
--- Farming account username
 mkLabel(main,"Farming account username:",UDim2.new(1,-16,0,14),UDim2.new(0,8,0,118),C.muted,9)
 local recipF = Instance.new("Frame",main)
 recipF.Size=UDim2.new(1,-16,0,24); recipF.Position=UDim2.new(0,8,0,134)
@@ -143,14 +142,19 @@ local hideBtn = mkBtn(main,"👁 Hide Plants (keep 1 for lag)",
     UDim2.new(1,-16,0,26),UDim2.new(0,8,0,240),
     C.purpleD,C.purple)
 
+-- NEW: Prune all gardens button
+local pruneAllBtn = mkBtn(main,"🌾 Prune All Gardens (keep 1 per player)",
+    UDim2.new(1,-16,0,26),UDim2.new(0,8,0,274),
+    C.tealD,C.teal)
+
 local fireBtn = mkBtn(main,"🚨 Fire Emergency Regrow",
-    UDim2.new(1,-16,0,28),UDim2.new(0,8,0,274),
+    UDim2.new(1,-16,0,28),UDim2.new(0,8,0,308),
     Color3.fromRGB(30,15,15),Color3.fromRGB(100,40,40))
 fireBtn.Active=false
 
 -- Log
 local logScroll = Instance.new("ScrollingFrame",main)
-logScroll.Size=UDim2.new(1,-16,0,176); logScroll.Position=UDim2.new(0,8,0,310)
+logScroll.Size=UDim2.new(1,-16,0,176); logScroll.Position=UDim2.new(0,8,0,344)
 logScroll.BackgroundColor3=C.panel; logScroll.BorderSizePixel=0
 logScroll.ScrollBarThickness=3; logScroll.ScrollBarImageColor3=C.border
 logScroll.CanvasSize=UDim2.new(0,0,0,0)
@@ -179,7 +183,6 @@ local function log(msg,col)
     end)
 end
 
--- Wire up cycles input (needs log() defined)
 cyclesInput.FocusLost:Connect(function()
     local n = tonumber(cyclesInput.Text)
     if n and n > 0 and n <= 200 then
@@ -272,9 +275,6 @@ local function findTool(namePattern)
     return nil
 end
 
--- Place at the plant centroid so the sprinkler radius covers
--- the whole cluster. Only nudge a few studs if there's a plant
--- sitting right on that point (collision would drop the place).
 local function findSprinklerSpot(garden, centroid)
     if not garden then return centroid end
     local plants = garden:FindFirstChild("Plants")
@@ -292,8 +292,6 @@ local function findSprinklerSpot(garden, centroid)
         return false
     end
 
-    -- Try centroid first, then small offsets (2 studs, then 4)
-    -- All within normal sprinkler coverage radius.
     local offsets = {
         Vector3.new(0,0,0),
         Vector3.new(2,0,0), Vector3.new(-2,0,0),
@@ -307,8 +305,6 @@ local function findSprinklerSpot(garden, centroid)
             return pos
         end
     end
-    -- Everything blocked — return centroid anyway; the place call
-    -- will fail silently and retry logic handles it.
     return centroid
 end
 
@@ -384,7 +380,7 @@ locateBtn.MouseButton1Click:Connect(function()
 end)
 
 -- =====================
--- HIDE PLANTS
+-- HIDE PLANTS (target only)
 -- =====================
 hideBtn.MouseButton1Click:Connect(function()
     if not resolvedGarden then
@@ -414,6 +410,89 @@ hideBtn.MouseButton1Click:Connect(function()
 end)
 
 -- =====================
+-- PRUNE ALL GARDENS (NEW)
+-- Scan every garden in the server; if it has plants, destroy
+-- all but one client-side. Skips gardens with 0 or 1 plants.
+-- =====================
+pruneAllBtn.MouseButton1Click:Connect(function()
+    local gardensFolder = Workspace:FindFirstChild("Gardens")
+    if not gardensFolder then
+        log("No Gardens folder in Workspace", C.danger); return
+    end
+
+    pruneAllBtn.Active = false
+    pruneAllBtn.Text = "Pruning..."
+    log("── Prune All Gardens: scanning ──", C.teal)
+
+    task.spawn(function()
+        local gardensTouched  = 0
+        local gardensSkipped  = 0
+        local totalDestroyed  = 0
+
+        for _,garden in ipairs(gardensFolder:GetChildren()) do
+            local plants = garden:FindFirstChild("Plants")
+            if plants then
+                -- Group plants by owner prefix (userId at start of name).
+                -- Fallback: if we can't parse an owner, treat the whole
+                -- garden as one group.
+                local groups = {}
+                local order  = {}
+                for _,plant in ipairs(plants:GetChildren()) do
+                    local ownerKey = plant.Name:match("^(%d+)") or "_all"
+                    if not groups[ownerKey] then
+                        groups[ownerKey] = {}
+                        table.insert(order, ownerKey)
+                    end
+                    table.insert(groups[ownerKey], plant)
+                end
+
+                if #order == 0 then
+                    gardensSkipped = gardensSkipped + 1
+                else
+                    local gardenLabel = garden:GetAttribute("Owner")
+                        or garden.Name
+                    local gardenDestroyed = 0
+                    local gardenKept = 0
+
+                    for _,key in ipairs(order) do
+                        local list = groups[key]
+                        if #list <= 1 then
+                            gardenKept = gardenKept + #list
+                        else
+                            -- keep first, destroy rest
+                            gardenKept = gardenKept + 1
+                            for i = 2, #list do
+                                pcall(function() list[i]:Destroy() end)
+                                gardenDestroyed = gardenDestroyed + 1
+                            end
+                        end
+                    end
+
+                    if gardenDestroyed > 0 then
+                        gardensTouched = gardensTouched + 1
+                        totalDestroyed = totalDestroyed + gardenDestroyed
+                        log(("  %s: kept %d, destroyed %d"):format(
+                            tostring(gardenLabel):sub(1,20),
+                            gardenKept, gardenDestroyed), C.teal)
+                    else
+                        gardensSkipped = gardensSkipped + 1
+                    end
+                    task.wait() -- yield so we don't freeze on huge servers
+                end
+            else
+                gardensSkipped = gardensSkipped + 1
+            end
+        end
+
+        log(("── Done: %d gardens pruned, %d skipped, %d plants destroyed ──"):format(
+            gardensTouched, gardensSkipped, totalDestroyed), C.gold)
+        pruneAllBtn.Text = ("🌾 Pruned %d gardens (%d plants)"):format(gardensTouched, totalDestroyed)
+        pruneAllBtn.BackgroundColor3 = Color3.fromRGB(20,45,45)
+        pruneAllBtn.Active = true
+    end)
+end)
+
+-- =====================
 -- FIRE
 -- =====================
 local firing=false
@@ -423,7 +502,6 @@ local function placeSprinkler(centroid, plotId, hum, hrp, garden)
     if not sprTool then return false, "no sprinkler tool" end
     local sprName = sprTool:GetAttribute("Sprinkler") or sprTool.Name
 
-    -- Pick a spot on the garden that isn't on top of a plant
     local placePos = findSprinklerSpot(garden, centroid)
 
     hum:EquipTool(sprTool)
@@ -470,8 +548,8 @@ fireBtn.MouseButton1Click:Connect(function()
         local centroid = resolvedCentroid
         local plotId   = resolvedPlotId
         local garden   = resolvedGarden
-        local totalCycles = WATER_CYCLES     -- snapshot at run start
-        local intervalSec = WATER_INTERVAL   -- snapshot at run start
+        local totalCycles = WATER_CYCLES
+        local intervalSec = WATER_INTERVAL
         local char = lp.Character
         local hum  = char and char:FindFirstChildOfClass("Humanoid")
         local hrp  = char and char:FindFirstChild("HumanoidRootPart")
@@ -494,7 +572,6 @@ fireBtn.MouseButton1Click:Connect(function()
                 sprinklerPlacedAt = os.clock()
                 log("Sprinkler placed ✓", C.accent)
                 task.wait(0.5)
-                -- Verify it landed; retry once if not
                 if not sprinklerExistsOnGarden(garden, centroid) then
                     log("Initial sprinkler didn't register — retrying", C.gold)
                     local ok2,err2 = placeSprinkler(centroid, plotId, hum, hrp, garden)
@@ -516,8 +593,6 @@ fireBtn.MouseButton1Click:Connect(function()
         for i = 1, totalCycles do
             if not firing then log("Stopped by user", C.gold); break end
 
-            -- Always verify a sprinkler is present before watering.
-            -- Re-place if missing OR if lifetime expired.
             local needSprinkler = false
             local reason = ""
             if not sprinklerExistsOnGarden(garden, centroid) then
@@ -534,7 +609,6 @@ fireBtn.MouseButton1Click:Connect(function()
                     sprinklerPlacedAt = os.clock()
                     log("  Sprinkler ✓", C.accent)
                     task.wait(0.4)
-                    -- Verify it actually landed; retry once if not
                     if not sprinklerExistsOnGarden(garden, centroid) then
                         log("  Sprinkler didn't register — retrying", C.gold)
                         local ok2,err2 = placeSprinkler(centroid, plotId, hum, hrp, garden)
@@ -583,7 +657,7 @@ fireBtn.MouseButton1Click:Connect(function()
     end)
 end)
 
-log("Multi-Cycle Regrow v3.1 loaded", C.accent)
+log("Multi-Cycle Regrow v3.6 loaded", C.accent)
 log(("Config: %d water cycles @ %ds, sprinkler life %ds"):format(WATER_CYCLES,WATER_INTERVAL,SPRINKLER_LIFE), C.muted)
-log("Tip: Edit cycles textbox, then Locate + Fire", C.muted)
-print("[GAG2 Emergency Regrow v3.5] Loaded.")
+log("New: 🌾 Prune All Gardens — keeps 1 plant per player everywhere", C.teal)
+print("[GAG2 Emergency Regrow v3.6] Loaded.")
